@@ -1,17 +1,21 @@
-import openai
 
-from embedchain.llm.cohere_llm import CohereLlm  # Consider using a more descriptive module name
+import openai
 
 import os
 
 import numpy as np
 
-from openai.embeddings_utils import get_embedding, cosine_similarity
+import pandas as pd
 
-import pandas as pd  # Add missing import statement for pandas
+
+# import module with a more descriptive name
+
+from embedchain.llm.cohere_llm import CohereLlm
+
 
 
 os.environ["COHERE_API_KEY"] = "your-cohere-api-key"
+
 
 
 # Function to load and inspect a dataset
@@ -20,7 +24,6 @@ def load_and_inspect_dataset(input_datapath):
 
     _, file_extension = os.path.splitext(input_datapath)
 
-    
 
     if file_extension == '.csv':
 
@@ -35,6 +38,8 @@ def load_and_inspect_dataset(input_datapath):
         raise ValueError(f'Unsupported file type {file_extension}')
 
 
+    # Print columns in the dataset for inspection
+
     print(f"Columns in the dataset: {df.columns}")
 
 
@@ -44,13 +49,17 @@ def load_and_inspect_dataset(input_datapath):
 
 # Function to get the embedding of a text
 
+# Adding comment to explain the functionality of the function
+
 def get_embedding(text, model_name='cohere'):
 
     if model_name == 'cohere':
 
         try:
 
-            cohere_llm = CohereLlm()  # Consider moving this line outside the function for a potentially faster initialization
+            # Move the initialization of CohereLlm outside the function for better performance
+
+            cohere_llm = CohereLlm()
 
             return cohere_llm.get_llm_model_answer(text)
 
@@ -58,7 +67,6 @@ def get_embedding(text, model_name='cohere'):
 
             print("Cohere model not available, falling back to ada model")
 
-    
 
     # If the cohere model is not available or if the model_name is ada, use the ada model
 
@@ -68,6 +76,8 @@ def get_embedding(text, model_name='cohere'):
 
 # Function to calculate the cosine similarity between two vectors
 
+# Adding comment to explain the functionality of the function
+
 def cosine_similarity(a, b):
 
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
@@ -75,6 +85,8 @@ def cosine_similarity(a, b):
 
 
 # Function to search a dataset based on a query
+
+
 
 def search_dataset(df, query, column_to_search):
 
