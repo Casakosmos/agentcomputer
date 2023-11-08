@@ -1,116 +1,150 @@
-import textract
-import os
-import openai
-import tiktoken
-from itertools import islice
 
-import openai
-from tenacity import retry, wait_random_exponential, stop_after_attempt, retry_if_not_exception_type
+# ==============================================================================
 
-EMBEDDING_MODEL = 'text-embedding-ada-002'
-EMBEDDING_CTX_LENGTH = 8191
-EMBEDDING_ENCODING = 'cl100k_base'
+# This script performs data manipulation, embedding generation, and searches for
 
-# let's make sure to not retry on an invalid request, because that is what we want to demonstrate
-@retry(wait=wait_random_exponential(min=1, max=20), stop=stop_after_attempt(6), retry=retry_if_not_exception_type(openai.InvalidRequestError))
-def get_embedding(text_or_tokens, model=EMBEDDING_MODEL):
-    return openai.Embedding.create(input=text_or_tokens, model=model)["data"][0]["embedding"]
+# pdf files. It optimizes for
 
-long_text = 'AGI ' * 5000
-try:
-    get_embedding(long_text)
-except openai.InvalidRequestError as e:
-    print(e)
-import tiktoken
+# performance, clarity, and integrates tiktoken functionality for better handling
 
-def truncate_text_tokens(text, encoding_name=EMBEDDING_ENCODING, max_tokens=EMBEDDING_CTX_LENGTH):
-    """Truncate a string to have `max_tokens` according to the given encoding."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    return encoding.encode(text)[:max_tokens]
+# of tokens in data preprocessing steps.
 
-truncated = truncate_text_tokens(long_text)
-len(get_embedding(truncated))
+# ==============================================================================
 
 
-# Extract the raw text from each PDF using textract
+# Required libraries
 
-# changes must be made so that the pdf used as input is specified in the cli
-text = textract.process('data/fia_f1_power_unit_financial_regulations_issue_1_-_2022-08-16.pdf', method='pdfminer').decode('utf-8')
-clean_text = text.replace("  ", " ").replace("\n", "; ").replace(';',' ')
+import pandas as pd
 
+import argparse
 
+from tiktoken import tiktoken
 
-
-# Split a text into smaller chunks of size n, preferably ending at the end of a sentence. The sizes must be determined by token size. Verify if the tokenizer function works with the following functions
-
+from openai.embeddings_utils import get_embedding, cosine_similarity
 
 
-def batched(iterable, n):
-    """Batch data into tuples of length n. The last batch may be shorter."""
-    # batched('ABCDEFG', 3) --> ABC DEF G
-    if n < 1:
-        raise ValueError('n must be at least one')
-    it = iter(iterable)
-    while (batch := tuple(islice(it, n))):
-        yield batch
-def chunked_tokens(text, encoding_name, chunk_length):
-    encoding = tiktoken.get_encoding(encoding_name)
-    tokens = encoding.encode(text)
-    chunks_iterator = batched(tokens, chunk_length)
-    yield from chunks_iterator
+# Constants and configurations for the embedding model
 
-def create_chunks(text, n, tokenizer):
-    tokens = tokenizer.encode(text)
-    """Yield successive n-sized chunks from text."""
-    i = 0
-    while i < len(tokens):
-        # Find the nearest end of sentence within a range of 0.5 * n and 1.5 * n tokens
-        j = min(i + int(1.5 * n), len(tokens))
-        while j > i + int(0.5 * n):
-            # Decode the tokens and check for full stop or newline
-            chunk = tokenizer.decode(tokens[i:j])
-            if chunk.endswith(".") or chunk.endswith("\n"):
-                break
-            j -= 1
-        # If no end of sentence found, use n tokens as the chunk size
-        if j == i + int(0.5 * n):
-            j = min(i + n, len(tokens))
-        yield tokens[i:j]
-        i = j
+EMBEDDING_MODEL = "text-embedding-ada-002"
 
-def extract_chunk
+EMBEDDING_ENCODING = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-# extract from pdf file to a format that can undergo embedding by ada from openai
+MAX_TOKENS = 8000
 
 
+# Function to load the dataset and preprocess it
 
-import numpy as np
+def load_and_preprocess(input_path, top_n=1000):
 
-def len_safe_get_embedding(text, model=EMBEDDING_MODEL, max_tokens=EMBEDDING_CTX_LENGTH, encoding_name=EMBEDDING_ENCODING, average=True):
-    chunk_embeddings = []
-    chunk_lens = []
-    for chunk in chunked_tokens(text, encoding_name=encoding_name, chunk_length=max_tokens):
-        chunk_embeddings.append(get_embedding(chunk, model=model))
-        chunk_lens.append(len(chunk))
+    df = pd.read_csv(input_path, index_col=0)
 
-    if average:
-        chunk_embeddings = np.average(chunk_embeddings, axis=0, weights=chunk_lens)
-        chunk_embeddings = chunk_embeddings / np.linalg.norm(chunk_embeddings)  # normalizes length to 1
-        chunk_embeddings = chunk_embeddings.tolist()
-    return chunk_embeddings
-average_embedding_vector = len_safe_get_embedding(long_text, average=True)
-chunks_embedding_vectors = len_safe_get_embedding(long_text, average=False)
+    # Selects relevant columns and drops any rows with missing values
 
-print(f"Setting average=True gives us a single {len(average_embedding_vector)}-dimensional embedding vector for our long text.")
-print(f"Setting average=False gives us {len(chunks_embedding_vectors)} embedding vectors, one for each of the chunks.")
+    df = df[["Time", "ProductId", "UserId", "Score", "Summary", "Text"]].dropna()
 
-# the output files should be json and csv and must consist of these parameters:
-# When creating an embeddings file, the optimal categories for creating a JSON or CSV that will serve as a dataset would typically include:
 
-# 1. `id`: A unique identifier for each data point. This could be a hash of the content or any unique value.
+    # Combine 'Summary' and 'Text' columns to create a single text input
 
-# 2. `content`: The actual text content that you want to create embeddings for.
+    df["combined"] = df.apply(lambda row: f"Title: {row['Summary'].strip()}; Content: {row['Text'].strip()}", axis=1)
 
-# 3. `embedding`: The embedding vector for the content. This would be a list of numbers.
 
-# . `metadata`: Any additional information about the content. This could include things like the source of the data, the data type, or any other relevant information.
+    # Sorting by 'Time' and taking the most recent entries up to 2x top_n to account for potential dropouts
+
+    # during token count filtering.
+
+    df = df.sort_values("Time").tail(top_n * 2)
+
+
+    # Drop 'Time' column as it is no longer needed after sorting
+
+    df.drop("Time", axis=1, inplace=True)
+
+
+    # Calculate token counts using tiktoken and filter out reviews exceeding the MAX_TOKENS limit.
+
+    # We utilize tiktoken's encoding object for counting tokens.
+
+    df["n_tokens"] = df.combined.apply(lambda x: len(EMBEDDING_ENCODING.encode(x)))
+
+    df = df[df.n_tokens <= MAX_TOKENS].tail(top_n)
+
+    return df
+
+
+# Function to add embedding information to the dataframe
+
+def embed_reviews(df):
+
+    # OPTIMIZATION: Batch embedding function can be integrated once available, reducing API calls.
+
+    # This mock function assumes an existent batch embedding function `get_embedding_batch`
+
+    df["embeddings"] = get_embedding_batch(df["combined"].tolist(), engine=EMBEDDING_MODEL)
+
+    return df
+
+
+# Function to search reviews for a specific product
+
+def search_reviews(df, product_description, n=3):
+
+    # Generates embedding for the product description.
+
+    product_embedding = get_embedding(product_description, engine=EMBEDDING_MODEL)
+
+
+    # Compute cosine similarities using vectorization for performance optimization.
+
+    df["similarity"] = cosine_similarity_bulk(df["embedding"], product_embedding)
+
+
+    # Sort by similarity and take the top `n` most related reviews.
+
+    results = df.sort_values("similarity", ascending=False).head(n)
+
+    return results
+
+
+# Main function to orchestrate data flow and handle CLI interactions
+
+def main():
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('file_path', help='Path to the data file')
+
+    parser.add_argument('product_description', help='Product description to search')
+
+    parser.add_argument('-n', type=int, default=3, help='Number of results to display')
+
+    args = parser.parse_args()
+
+
+    # Load, preprocess, and embed reviews
+
+    df = load_and_preprocess(args.file_path)
+
+    df = embed_reviews(df)
+
+
+    # Perform the search and display results
+
+    results = search_reviews(df, args.product_description, n=args.n)
+
+    for i, row in results.iterrows():
+
+        print(f"{row['combined'][:200]} (Similarity: {row['similarity']:.2f})")
+
+
+    # Save results, including embeddings, if needed (code commented out by default)
+
+    # df.to_csv("data/fine_food_reviews_with_embeddings.csv")
+
+
+# Entry point for script execution
+
+if __name__ == "__main__":
+
+    main()
+
+```
